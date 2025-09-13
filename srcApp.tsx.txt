@@ -1,0 +1,443 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { gapi } from 'gapi-script';
+import {
+  Calendar,
+  Trash2,
+  LogIn,
+  LogOut,
+  Plus,
+  Settings,
+  ListChecks,
+} from 'lucide-react';
+
+type ShiftType = 'normal' | 'extra' | 'noturno' | 'feriado' | 'troca';
+
+interface ChecklistItem {
+  id: string;
+  label: string;
+  checked: boolean;
+}
+
+interface Shift {
+  id: string;
+  ownerEmail: string;
+  date: Date;
+  startTime: string; // "HH:mm"
+  endTime: string;   // "HH:mm"
+  location: string;
+  value: number;
+  type: ShiftType;
+  notes: string;
+  color: string;
+  checklist: ChecklistItem[];
+}
+
+const defaultChecklistItems: ChecklistItem[] = [
+  { id: '1', label: 'Documentos prontos', checked: false },
+  { id: '2', label: 'Equipamentos conferidos', checked: false },
+  { id: '3', label: 'Confirmação com equipe', checked: false },
+];
+
+// Substitua pelos seus dados do Google Cloud Console
+const CLIENT_ID = 'SEU_CLIENT_ID.apps.googleusercontent.com';
+const API_KEY = 'SUA_API_KEY';
+const SCOPES = 'https://www.googleapis.com/auth/calendar.events';
+
+function useGoogleCalendar() {
+  const [isSignedIn, setIsSignedIn] = useState(false);
+
+  useEffect(() => {
+    function start() {
+      gapi.client
+        .init({
+          apiKey: API_KEY,
+          clientId: CLIENT_ID,
+          scope: SCOPES,
+          discoveryDocs: [
+            'https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest',
+          ],
+        })
+        .then(() => {
+          const authInstance = gapi.auth2.getAuthInstance();
+          setIsSignedIn(authInstance.isSignedIn.get());
+          authInstance.isSignedIn.listen(setIsSignedIn);
+        });
+    }
+    gapi.load('client:auth2', start);
+  }, []);
+
+  const signIn = () => gapi.auth2.getAuthInstance().signIn();
+  const signOut = () => gapi.auth2.getAuthInstance().signOut();
+
+  const addEvent = async (shift: Shift) => {
+    if (!isSignedIn) {
+      alert('Por favor, faça login no Google para sincronizar.');
+      return;
+    }
+    const [startHour, startMin] = shift.startTime.split(':').map(Number);
+    const [endHour, endMin] = shift.endTime.split(':').map(Number);
+
+    const startDateTime = new Date(shift.date);
+    startDateTime.setHours(startHour, startMin, 0, 0);
+    const endDateTime = new Date(shift.date);
+    endDateTime.setHours(endHour, endMin, 0, 0);
+
+    const event = {
+      summary: `Plantão: ${shift.location}`,
+      description: shift.notes || '',
+      start: {
+        dateTime: startDateTime.toISOString(),
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      },
+      end: {
+        dateTime: endDateTime.toISOString(),
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      },
+    };
+    try {
+      await gapi.client.calendar.events.insert({
+        calendarId: 'primary',
+        resource: event,
+      });
+      alert('Plantão sincronizado com Google Calendar!');
+    } catch (error) {
+      console.error('Erro ao adicionar evento:', error);
+      alert('Erro ao sincronizar com Google Calendar.');
+    }
+  };
+
+  return { isSignedIn, signIn, signOut, addEvent };
+}
+
+function ClockIcon() {
+  return (
+    <svg
+      className="w-7 h-7"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      viewBox="0 0 24 24"
+    >
+      <circle cx={12} cy={12} r={10} />
+      <polyline points="12 6 12 12 16 14" />
+    </svg>
+  );
+}
+
+export default function App() {
+  const user = { email: 'medico@exemplo.com', name: 'Dr. Silva' };
+
+  const [shifts, setShifts] = useState<Shift[]>(() => {
+    const saved = localStorage.getItem('shifts');
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      return parsed.map((s: any) => ({ ...s, date: new Date(s.date) }));
+    }
+    return [];
+  });
+
+  const [editingShift, setEditingShift] = useState<Shift | null>(null);
+  const [showAddShiftModal, setShowAddShiftModal] = useState(false);
+
+  const [clockInTime, setClockInTime] = useState<Date | null>(null);
+  const [clockOutTime, setClockOutTime] = useState<Date | null>(null);
+  const [isShiftActive, setIsShiftActive] = useState(false);
+
+  const { isSignedIn, signIn, signOut, addEvent } = useGoogleCalendar();
+
+  useEffect(() => {
+    localStorage.setItem('shifts', JSON.stringify(shifts));
+  }, [shifts]);
+
+  useEffect(() => {
+    if (clockInTime) localStorage.setItem('clockInTime', clockInTime.toISOString());
+    else localStorage.removeItem('clockInTime');
+
+    if (clockOutTime) localStorage.setItem('clockOutTime', clockOutTime.toISOString());
+    else localStorage.removeItem('clockOutTime');
+
+    localStorage.setItem('isShiftActive', isShiftActive.toString());
+  }, [clockInTime, clockOutTime, isShiftActive]);
+
+  useEffect(() => {
+    const savedClockIn = localStorage.getItem('clockInTime');
+    const savedClockOut = localStorage.getItem('clockOutTime');
+    const savedIsActive = localStorage.getItem('isShiftActive');
+
+    if (savedClockIn) setClockInTime(new Date(savedClockIn));
+    if (savedClockOut) setClockOutTime(new Date(savedClockOut));
+    if (savedIsActive) setIsShiftActive(savedIsActive === 'true');
+  }, []);
+
+  const startShift = () => {
+    if (isShiftActive) {
+      alert('Você já iniciou um turno.');
+      return;
+    }
+    const now = new Date();
+    setClockInTime(now);
+    setClockOutTime(null);
+    setIsShiftActive(true);
+    alert(`Turno iniciado às ${now.toLocaleTimeString()}`);
+  };
+
+  const endShift = () => {
+    if (!isShiftActive) {
+      alert('Nenhum turno ativo para finalizar.');
+      return;
+    }
+    const now = new Date();
+    setClockOutTime(now);
+    setIsShiftActive(false);
+    alert(`Turno finalizado às ${now.toLocaleTimeString()}`);
+
+    if (clockInTime) {
+      const start = clockInTime;
+      const end = now;
+
+      const startTimeStr = start.toTimeString().slice(0, 5);
+      const endTimeStr = end.toTimeString().slice(0, 5);
+
+      const newAutoShift: Omit<Shift, 'id' | 'ownerEmail'> = {
+        date: start,
+        startTime: startTimeStr,
+        endTime: endTimeStr,
+        location: 'Local não informado',
+        value: 0,
+        type: 'normal',
+        notes: 'Plantão criado automaticamente pelo relógio de ponto',
+        color: '#4F46E5',
+        checklist: defaultChecklistItems.map((i) => ({ ...i })),
+      };
+
+      const newId = Math.random().toString(36).substr(2, 9);
+
+      setShifts((prev) => [
+        ...prev,
+        {
+          ...newAutoShift,
+          id: newId,
+          ownerEmail: user.email,
+        },
+      ]);
+
+      setEditingShift({
+        ...newAutoShift,
+        id: newId,
+        ownerEmail: user.email,
+      });
+      setShowAddShiftModal(true);
+    }
+  };
+
+  const saveShift = (shift: Shift) => {
+    setShifts((prev) => {
+      const exists = prev.find((s) => s.id === shift.id);
+      if (exists) {
+        return prev.map((s) => (s.id === shift.id ? shift : s));
+      }
+      return [...prev, shift];
+    });
+    setShowAddShiftModal(false);
+    setEditingShift(null);
+  };
+
+  const deleteShift = (id: string) => {
+    if (window.confirm('Deseja realmente excluir este plantão?')) {
+      setShifts((prev) => prev.filter((s) => s.id !== id));
+    }
+  };
+
+  const totalHours = useMemo(() => {
+    return shifts.reduce((acc, s) => {
+      const [startH, startM] = s.startTime.split(':').map(Number);
+      const [endH, endM] = s.endTime.split(':').map(Number);
+      const startDate = new Date(s.date);
+      startDate.setHours(startH, startM, 0, 0);
+      const endDate = new Date(s.date);
+      endDate.setHours(endH, endM, 0, 0);
+      const diff = (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60);
+      return acc + (diff > 0 ? diff : 0);
+    }, 0);
+  }, [shifts]);
+
+  return (
+    <div className="min-h-screen bg-gradient-to-tr from-purple-400 via-pink-400 to-red-400 text-gray-900 dark:text-gray-100 dark:bg-gray-900 transition-colors duration-500">
+      <header className="flex items-center justify-between p-4 max-w-5xl mx-auto">
+        <h1 className="text-3xl font-extrabold flex items-center gap-2">
+          <Calendar size={32} /> Plantões Médicos
+        </h1>
+        <div className="flex items-center gap-4">
+          <span className="font-semibold">{user.name}</span>
+          {isSignedIn ? (
+            <button
+              onClick={signOut}
+              className="flex items-center gap-1 bg-red-600 hover:bg-red-700 px-3 py-1 rounded text-white transition"
+              title="Sair do Google"
+            >
+              <LogOut size={18} /> Sair Google
+            </button>
+          ) : (
+            <button
+              onClick={signIn}
+              className="flex items-center gap-1 bg-green-600 hover:bg-green-700 px-3 py-1 rounded text-white transition"
+              title="Entrar com Google"
+            >
+              <LogIn size={18} /> Entrar Google
+            </button>
+          )}
+        </div>
+      </header>
+
+      <main className="max-w-5xl mx-auto p-4 space-y-8">
+        <section className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 max-w-md mx-auto">
+          <h2 className="text-2xl font-semibold mb-4 flex items-center gap-2">
+            <ClockIcon /> Relógio de Ponto Digital
+          </h2>
+          <div className="flex gap-4 mb-4">
+            <button
+              onClick={startShift}
+              disabled={isShiftActive}
+              className={`flex-1 py-2 rounded text-white font-semibold transition ${
+                isShiftActive
+                  ? 'bg-gray-400 cursor-not-allowed'
+                  : 'bg-green-600 hover:bg-green-700'
+              }`}
+            >
+              Iniciar Turno
+            </button>
+            <button
+              onClick={endShift}
+              disabled={!isShiftActive}
+              className={`flex-1 py-2 rounded text-white font-semibold transition ${
+                !isShiftActive
+                  ? 'bg-gray-400 cursor-not-allowed'
+                  : 'bg-red-600 hover:bg-red-700'
+              }`}
+            >
+              Finalizar Turno
+            </button>
+          </div>
+          {clockInTime && (
+            <p>
+              <strong>Início do turno:</strong>{' '}
+              {clockInTime.toLocaleTimeString()}
+            </p>
+          )}
+          {clockOutTime && (
+            <p>
+              <strong>Fim do turno:</strong> {clockOutTime.toLocaleTimeString()}
+            </p>
+          )}
+          {clockInTime && clockOutTime && (
+            <p>
+              <strong>Duração do turno:</strong>{' '}
+              {(
+                (clockOutTime.getTime() - clockInTime.getTime()) /
+                3600000
+              ).toFixed(2)}{' '}
+              horas
+            </p>
+          )}
+        </section>
+
+        <section>
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="text-2xl font-semibold flex items-center gap-2">
+              <ListChecks size={28} /> Meus Plantões
+            </h2>
+            <button
+              onClick={() => {
+                setEditingShift(null);
+                setShowAddShiftModal(true);
+              }}
+              className="flex items-center gap-1 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded transition"
+              title="Adicionar Plantão"
+            >
+              <Plus size={20} /> Novo Plantão
+            </button>
+          </div>
+          {shifts.length === 0 && (
+            <p className="text-center text-gray-600 dark:text-gray-400">
+              Nenhum plantão cadastrado.
+            </p>
+          )}
+          <ul className="space-y-3">
+            {shifts.map((shift) => (
+              <li
+                key={shift.id}
+                className="bg-white dark:bg-gray-800 rounded-lg shadow p-4 flex justify-between items-center"
+              >
+                <div>
+                  <p className="font-semibold text-lg">
+                    {shift.location} -{' '}
+                    {shift.date.toLocaleDateString('pt-BR')}
+                  </p>
+                  <p>
+                    {shift.startTime} - {shift.endTime} | R${shift.value.toFixed(2)} |{' '}
+                    <span className="capitalize">{shift.type}</span>
+                  </p>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">
+                    {shift.notes}
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => {
+                      setEditingShift(shift);
+                      setShowAddShiftModal(true);
+                    }}
+                    className="text-blue-500 hover:text-blue-700"
+                    title="Editar"
+                  >
+                    <Settings size={20} />
+                  </button>
+                  <button
+                    onClick={() => deleteShift(shift.id)}
+                    className="text-red-500 hover:text-red-700"
+                    title="Excluir"
+                  >
+                    <Trash2 size={20} />
+                  </button>
+                  <button
+                    onClick={() => addEvent(shift)}
+                    className="text-green-600 hover:text-green-800"
+                    title="Sincronizar com Google Calendar"
+                    disabled={!isSignedIn}
+                  >
+                    <Calendar size={20} />
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      </main>
+
+      {showAddShiftModal && (
+        <ShiftModal
+          shift={editingShift}
+          onClose={() => {
+            setShowAddShiftModal(false);
+            setEditingShift(null);
+          }}
+          onSave={saveShift}
+          userEmail={user.email}
+        />
+      )}
+    </div>
+  );
+}
+
+interface ShiftModalProps {
+  shift: Shift | null;
+  onClose: () => void;
+  onSave: (shift: Shift) => void;
+  userEmail: string;
+}
+
+function ShiftModal({ shift, onClose, onSave, userEmail }: ShiftModalProps) {
+  const [date, setDate] = useState(
+    shift ? shift.date.toISOString().
